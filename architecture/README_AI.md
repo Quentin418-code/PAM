@@ -1,47 +1,56 @@
-# 🧠 PAM Project Architecture (Digital Twin)
+# 🧠 PAM Project Architecture - Avatar 3D (Mesh Warp Engine)
 
-Ce document décrit l'architecture technique du projet PAM pour permettre à une IA de comprendre rapidement le contexte, les dépendances et le flux de données.
+## 📌 État Actuel : "Mesh Warp Engine" (Mapping 3D)
+Cette branche `Avatar-3D` abandonne les méthodes 2D (Puppet/Slicing) pour utiliser la **déformation de maillage par triangulation**.
+L'image de l'avatar est transformée en une "peau" flexible qui est épinglée sur les 468 points du visage de l'utilisateur.
 
-## 📌 État Actuel : "Compatibility Mode"
-Le projet utilise actuellement **OpenCV Native (Haar Cascades)** au lieu de MediaPipe pour assurer une compatibilité maximale (problèmes rencontrés avec Python 3.12 + MediaPipe sous Linux).
-Nous utilisons une **vidéo pré-enregistrée** (`12099.mp4`) en entrée car la webcam n'est pas détectée sur la machine hôte.
+## 🔄 Évolution (Avant / Après)
 
-## 📂 Structure des Fichiers
+| Feature | Ancienne Arch. (Puppet) | Nouvelle Arch. (Mesh Warp) |
+| :--- | :--- | :--- |
+| **Moteur** | OpenCV (Haar Cascades) | **MediaPipe Face Mesh** |
+| **Précision** | Rectangle (X, Y, W, H) | **468 Landmarks (3D)** |
+| **Rendu** | Découpage d'image (Haut/Bas) | **Déformation Triangulaire (Warp)** |
+| **Mouvement** | Parallaxe 2D (Gauche/Droite) | **Suivi 3D complet** (Pitch, Yaw, Roll) |
+| **Expressions** | Juste ouverture bouche | **Sourires, Grimaces, Yeux, Bouche** |
 
-### `main.py` (Orchestrateur)
-* **Rôle :** Point d'entrée. Charge la vidéo, initialise les modules, gère la boucle principale et l'affichage (GUI).
-* **Logique :**
-    1.  Lit une frame de la vidéo.
-    2.  Envoie la frame à `FaceDetector`.
-    3.  Reçoit les données d'analyse (position, ouverture bouche/yeux).
-    4.  Envoie ces données à `AvatarRenderer`.
-    5.  Affiche deux fenêtres OpenCV (`Camera` et `Avatar`).
-* **Spécificité :** Gère le redimensionnement de l'affichage pour éviter que les vidéos 4K ne dépassent de l'écran.
+## 🛠️ Stack Technique & Versioning (CRITIQUE)
+En raison de conflits entre Python 3.12, MediaPipe et Protobuf, les versions suivantes sont **impératives** :
 
-### `src/face_detector.py` (Vision)
-* **Rôle :** Analyse l'image pour extraire les metrics du visage.
-* **Technologie :** `cv2.CascadeClassifier` (Haar Cascades).
-* **Sortie (Dictionnaire `data`) :**
-    * `detected` (bool) : Visage trouvé ?
-    * `x, y, w, h` : Bounding box du visage.
-    * `frame_w, frame_h` : Dimensions de la vidéo source (pour le ratio).
-    * `left_openness`, `right_openness` (0.0 ou 1.0) : Détection binaire des yeux (basée sur `haarcascade_eye`).
-    * `mouth_openness` (float 0.0 -> 1.0) : Calculée par **thresholding** (comptage de pixels noirs dans le tiers inférieur du visage).
+* **Python :** 3.12+
+* **MediaPipe :** `0.10.14` (Stabilité)
+* **Protobuf :** `<4` (ex: `3.20.3`) - *Incompatible avec v4/v5*
+* **OpenCV :** `opencv-python` (Standard) - *Ne pas installer headless*
 
-### `src/avatar.py` (Rendu)
-* **Rôle :** Dessine l'avatar vectoriel (cercles, lignes) sur un canvas noir.
-* **Logique :**
-    * **Centrage forcé :** L'avatar reste au centre de sa fenêtre (300, 300).
-    * **Zoom adaptatif :** La taille de la tête dépend du ratio `largeur_visage / largeur_video` (plus on est près, plus c'est gros).
-    * **Animation :** Les yeux et la bouche réagissent aux données du détecteur.
+## 📂 Structure des Modules
 
-## 🔄 Flux de Données (Data Flow)
+### 1. `src/face_mesh.py` (Le Radar)
+* **Rôle :** Scanne le visage et retourne une carte de points.
+* **Tech :** `mp.solutions.face_mesh` avec `refine_landmarks=True`.
+* **Mode Statique :** Utilisé au démarrage pour scanner `mask.png` avec haute précision.
+* **Mode Stream :** Utilisé en boucle pour scanner la webcam (rapide).
+* **Output :** Liste de 468 tuples `(x, y)`.
 
-1.  **Input :** `frame` (Image BGR depuis `12099.mp4`)
-2.  **Processing :** `FaceDetector.process(frame)` -> `face_data` (Dict)
-3.  **Rendering :** `AvatarRenderer.draw(face_data)` -> `avatar_img` (Image BGR)
-4.  **Output :** Affichage via `cv2.imshow`.
+### 2. `src/avatar.py` (Le Moteur de Rendu)
+C'est le cœur du système. Il fonctionne en deux temps :
 
-## ⚠️ Notes pour l'IA suivante
-* Si vous devez repasser sur **MediaPipe**, il faut gérer le conflit de version `protobuf` et l'importation `mp.solutions` sur Python 3.12.
-* Le fichier `src/geometry.py` est actuellement **inutilisé** dans cette version Haar Cascade (il servait pour les calculs d'angles Vectoriels de MediaPipe).
+#### A. Initialisation (`__init__`)
+1.  Charge `mask.png`.
+2.  Scanne le visage du Na'vi sur l'image.
+3.  Effectue une **Triangulation de Delaunay** sur les points du Na'vi.
+4.  Stocke la liste des triangles (indices des points connectés).
+
+#### B. Boucle de Rendu (`draw`)
+Pour chaque frame vidéo :
+1.  Récupère les landmarks de l'utilisateur.
+2.  **Scaling :** Redimensionne et centre les points utilisateurs pour qu'ils rentrent dans la fenêtre Avatar (600x600).
+3.  **Warping :** Pour chaque triangle du maillage :
+    * Extrait le triangle de texture du Na'vi.
+    * Calcule la matrice de transformation affine vers le triangle utilisateur.
+    * Déforme et colle le triangle.
+4.  **Composition :** Fusionne le visage déformé sur le fond.
+
+## ⚠️ Notes de Maintenance
+* **`mask.png` :** Doit impérativement contenir un visage détectable de face. Si l'écran reste noir ou affiche "LOADING", c'est que l'IA ne reconnaît pas le visage sur l'image source.
+* **Bords d'écran :** Une sécurité "Clipping" est active dans `warp_triangle` pour éviter les crashs si le visage sort du cadre.
+

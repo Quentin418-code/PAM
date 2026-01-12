@@ -1,63 +1,54 @@
 import cv2
 import numpy as np
-from src.face_detector import FaceDetector
+from src.face_mesh import FaceMeshDetector
 from src.avatar import AvatarRenderer
 
 def main():
-    # --- CONFIGURATION ---
     VIDEO_FILE = '12100.mp4'
     
-    detector = FaceDetector()
-    renderer = AvatarRenderer(size=600) # Fenêtre de l'avatar (carrée)
+    # Initialisation du moteur Mesh
+    detector = FaceMeshDetector()
+    
+    # Le renderer va scanner mask.png au démarrage, surveille le terminal !
+    renderer = AvatarRenderer(size=600)
     
     cap = cv2.VideoCapture(VIDEO_FILE)
 
-    print(f"--- LECTURE VIDEO : {VIDEO_FILE} ---")
-    print("Appuie sur 'q' pour quitter.")
+    print("--- PAM MESH ENGINE STARTED ---")
+    print("Si ça rame, c'est normal : le calcul 3D est intensif.")
 
-    # On crée une fenêtre "intelligente" qu'on pourra redimensionner
-    cv2.namedWindow('PAM - Camera', cv2.WINDOW_NORMAL)
     cv2.namedWindow('PAM - Avatar', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('PAM - Camera', cv2.WINDOW_NORMAL)
 
     while cap.isOpened():
         success, frame = cap.read()
-        
         if not success:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             continue
 
-        # 1. Analyse
+        # 1. Analyse Mesh (468 points)
         face_data = detector.process(frame)
         
-        # 2. Création de l'Avatar
+        # 2. Rendu Warp
         avatar_img = renderer.draw(face_data)
 
-        # 3. Debug visuel (Carré vert)
+        # 3. Debug Caméra
         if face_data['detected']:
+            pts = face_data['landmarks']
+            # On dessine quelques points pour montrer que le tracking marche
+            # (Ex: Contour visage et lèvres)
+            for i in range(0, len(pts), 5): # Un point sur 5 pour pas surcharger
+                cv2.circle(frame, (pts[i][0], pts[i][1]), 1, (0, 255, 0), -1)
+            
             (x, y, w, h) = face_data['debug_box']
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-        # --- AFFICHAGE ADAPTATIF ---
-        
-        # On calcule un facteur de réduction pour que la vidéo tienne sur l'écran
-        # Si la hauteur dépasse 600px, on la réduit
-        target_height = 600
-        h_cam, w_cam, _ = frame.shape
-        
-        if h_cam > target_height:
-            scale = target_height / h_cam
-            new_w = int(w_cam * scale)
-            new_h = int(h_cam * scale)
-            display_frame = cv2.resize(frame, (new_w, new_h))
-        else:
-            display_frame = frame
-
-        cv2.imshow('PAM - Camera', display_frame)
         cv2.imshow('PAM - Avatar', avatar_img)
-
-        # Placement des fenêtres (facultatif, pour éviter le chevauchement)
-        # cv2.moveWindow('PAM - Camera', 0, 0)
-        # cv2.moveWindow('PAM - Avatar', display_frame.shape[1] + 10, 0)
+        
+        h_cam, w_cam = frame.shape[:2]
+        if h_cam > 600:
+            frame = cv2.resize(frame, (int(w_cam * (600/h_cam)), 600))
+        cv2.imshow('PAM - Camera', frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break

@@ -1,143 +1,194 @@
 import cv2
 import numpy as np
+import src.face_mesh as fm
 
 class AvatarRenderer:
     def __init__(self, size=600):
         self.w = size
         self.h = size
-        self.bg_color = (20, 20, 25)
+        self.bg_color = (5, 5, 10)
         
-        # Couleurs
-        self.skin_color = (180, 200, 255) 
-        self.hair_color = (30, 30, 30)    
-        self.eye_white = (245, 245, 245)
-        self.iris_color = (100, 50, 0)    
-        self.lip_color = (130, 130, 200)  
+        self.mask_img = None
+        self.mask_landmarks = None
+        self.triangles = None
+        self.is_ready = False
+        
+        # Scanner en mode "Image Fixe" pour une précision maximale sur le mask
+        self.mask_scanner = fm.FaceMeshDetector(static_mode=True)
+        
+        self.load_and_mesh_mask()
+
+    def load_and_mesh_mask(self):
+        try:
+            print("--- CHARGEMENT DE MASK.PNG ---")
+            img = cv2.imread('mask.png', cv2.IMREAD_UNCHANGED)
+            if img is None: 
+                print("ERREUR: 'mask.png' introuvable.")
+                return
+
+            # Conversion propre pour la détection
+            if img.shape[2] == 4:
+                rgb_for_scan = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            else:
+                rgb_for_scan = img
+
+            # 1. SCAN DU VISAGE SUR L'IMAGE SOURCE
+            data = self.mask_scanner.process(rgb_for_scan)
+            
+            if not data['detected']:
+                print("ERREUR: Aucun visage trouvé sur mask.png.")
+                print("Conseil: Prends une image où le visage est bien de face et éclairé.")
+                return
+
+            self.mask_img = img
+            self.mask_landmarks = data['landmarks']
+
+            # 2. TRIANGULATION (On crée le maillage)
+            rect = (0, 0, self.mask_img.shape[1], self.mask_img.shape[0])
+            subdiv = cv2.Subdiv2D(rect)
+            
+            # On insère les points du visage
+            for p in self.mask_landmarks:
+                if 0 <= p[0] < self.mask_img.shape[1] and 0 <= p[1] < self.mask_img.shape[0]:
+                    subdiv.insert((float(p[0]), float(p[1])))
+                
+            triangle_list = subdiv.getTriangleList()
+            
+            self.triangles = []
+            for t in triangle_list:
+                pts = [(t[0], t[1]), (t[2], t[3]), (t[4], t[5])]
+                indices = []
+                
+                # Pour chaque sommet du triangle, on retrouve son ID
+                for pt in pts:
+                    # Sécurité bords
+                    if pt[0] < 0 or pt[0] >= self.mask_img.shape[1] or pt[1] < 0 or pt[1] >= self.mask_img.shape[0]:
+                        continue
+                        
+                    # Recherche du landmark le plus proche
+                    min_dist = 2.0 
+                    found_idx = -1
+                    for i, lm in enumerate(self.mask_landmarks):
+                        dist = abs(lm[0] - pt[0]) + abs(lm[1] - pt[1])
+                        if dist < min_dist:
+                            found_idx = i
+                            break
+                    if found_idx != -1:
+                        indices.append(found_idx)
+                
+                # Si on a bien les 3 points reliés au visage, on valide le triangle
+                if len(indices) == 3:
+                    self.triangles.append(indices)
+            
+            print(f"--- MESH PRET : {len(self.triangles)} polygones ---")
+            self.is_ready = True
+
+        except Exception as e:
+            print(f"--- CRASH INIT: {e} ---")
+
+    def warp_triangle(self, img1, img2, t1, t2):
+        # 1. Calcul des boîtes englobantes
+        r1 = cv2.boundingRect(np.float32([t1]))
+        r2 = cv2.boundingRect(np.float32([t2]))
+
+        # Sécurités de base et clipping
+        if r2[2] <= 0 or r2[3] <= 0: return 
+        h, w = img2.shape[:2]
+        
+        x1_dst, y1_dst = max(0, r2[0]), max(0, r2[1])
+        x2_dst, y2_dst = min(w, r2[0]+r2[2]), min(h, r2[1]+r2[3])
+        
+        if x1_dst >= x2_dst or y1_dst >= y2_dst: return
+
+        # Offsets locaux pour le dessin
+        offset_x, offset_y = x1_dst - r2[0], y1_dst - r2[1]
+        w_crop, h_crop = x2_dst - x1_dst, y2_dst - y1_dst
+
+        # 2. Préparation des points locaux
+        t1_rect = []
+        t2_rect = []
+        t2_rect_int = []
+
+        for i in range(3):
+            t1_rect.append(((t1[i][0] - r1[0]), (t1[i][1] - r1[1])))
+            t2_rect.append(((t2[i][0] - r2[0]), (t2[i][1] - r2[1])))
+            t2_rect_int.append(((t2[i][0] - r2[0]), (t2[i][1] - r2[1])))
+
+        # 3. Création du masque et warp
+        mask = np.zeros((r2[3], r2[2], 3), dtype=np.float32)
+        cv2.fillConvexPoly(mask, np.int32(t2_rect_int), (1.0, 1.0, 1.0), 16, 0)
+
+        img1_rect = img1[r1[1]:r1[1] + r1[3], r1[0]:r1[0] + r1[2]]
+        size = (r2[2], r2[3])
+        
+        warp_mat = cv2.getAffineTransform(np.float32(t1_rect), np.float32(t2_rect))
+        img2_rect = cv2.warpAffine(img1_rect, warp_mat, size, None, 
+                                   flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+
+        # 4. Fusion Sécurisée sur la zone visible
+        img2_rect_crop = img2_rect[offset_y : offset_y+h_crop, offset_x : offset_x+w_crop]
+        mask_crop = mask[offset_y : offset_y+h_crop, offset_x : offset_x+w_crop]
+        
+        dest = img2[y1_dst:y2_dst, x1_dst:x2_dst]
+        dest[:] = dest * ((1.0, 1.0, 1.0) - mask_crop)
+        dest[:] = dest + (img2_rect_crop * mask_crop)
 
     def draw(self, data):
         canvas = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         canvas[:] = self.bg_color
 
-        if not data.get('detected'):
-            cv2.putText(canvas, "Searching...", (self.w//2 - 80, self.h//2), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100,100,100), 2)
+        if not self.is_ready:
+            return canvas
+        if not data['detected']:
             return canvas
 
-        # --- GEOMETRIE ---
-        center_x = self.w // 2
-        center_y = self.h // 2
-        vid_w = data.get('frame_w', 640)
-        face_ratio = data['w'] / vid_w
-        base_scale = int(self.w * face_ratio * 1.3)
-        base_scale = max(90, min(base_scale, 280))
-
-        orientation = data.get('orientation', 'front')
-        look_shift = 0
-        if orientation == 'left': look_shift = -int(base_scale * 0.2)
-        elif orientation == 'right': look_shift = int(base_scale * 0.2)
-
-        # 1. CHEVEUX (ARRIERE)
-        cv2.circle(canvas, (center_x + look_shift//2, center_y - int(base_scale*0.1)), 
-                   int(base_scale * 0.65), self.hair_color, -1)
-
-        # 2. VISAGE
-        face_h = int(base_scale * 0.6)
-        face_w = int(base_scale * 0.48)
-        cv2.ellipse(canvas, (center_x + look_shift//3, center_y), 
-                    (face_w, face_h), 
-                    0, 0, 360, self.skin_color, -1)
-
-        # 3. YEUX
-        eye_y = center_y - int(face_h * 0.15)
-        eye_off_x = int(face_w * 0.45)
-        eye_w = int(face_w * 0.25)
-        eye_h = int(face_h * 0.18)
+        # --- CORRECTION D'ECHELLE (SCALING) ---
+        # C'est ici qu'on règle le problème du visage "en bas à droite".
+        # On adapte les coordonnées de la caméra à la taille de la fenêtre Avatar.
         
-        left_pos = (center_x - eye_off_x + look_shift, eye_y)
-        right_pos = (center_x + eye_off_x + look_shift, eye_y)
-
-        def draw_eye(pos, is_open):
-            if is_open:
-                cv2.ellipse(canvas, pos, (eye_w, eye_h), 0, 0, 360, self.eye_white, -1)
-                iris_pos = (pos[0] + look_shift//2, pos[1])
-                cv2.circle(canvas, iris_pos, int(eye_h * 0.6), self.iris_color, -1)
-                cv2.circle(canvas, iris_pos, int(eye_h * 0.25), (0,0,0), -1)
-                cv2.circle(canvas, (iris_pos[0]-2, iris_pos[1]-2), 3, (255,255,255), -1)
-            else:
-                start = (pos[0] - eye_w + 5, pos[1] + 5)
-                end = (pos[0] + eye_w - 5, pos[1] + 5)
-                cv2.line(canvas, start, end, (50,40,30), 3)
-
-        draw_eye(left_pos, data['left_openness'] > 0.5)
-        draw_eye(right_pos, data['right_openness'] > 0.5)
-
-        # 4. CHEVEUX (MECHE)
-        hair_y = center_y - face_h + int(face_h*0.4)
-        pts = np.array([
-            [center_x - face_w + look_shift, center_y - int(face_h*0.6)], 
-            [center_x + face_w + look_shift, center_y - int(face_h*0.6)], 
-            [center_x + look_shift, hair_y],             
-        ], np.int32)
-        cv2.fillPoly(canvas, [pts], self.hair_color)
-
-        # 5. BOUCHE INTELLIGENTE (Fixée en haut)
-        mouth_fixed_y = center_y + int(face_h * 0.45) 
-        mouth_w = int(face_w * 0.5)
-        openness = data['mouth_openness']
-        is_smiling = data.get('is_smiling', False) # On récupère le détecteur de sourire
-
-        # --- LOGIQUE DE DESSIN ---
+        cam_w = data.get('frame_w', self.w)
+        cam_h = data.get('frame_h', self.h)
         
-        # CAS 1 : Bouche Grande Ouverte (Parler / Rire)
-        if openness > 0.25:
-            drop = int(openness * (face_h * 0.4))
-            # Fond sombre
-            pts_mouth = np.array([
-                [center_x - mouth_w + look_shift//2, mouth_fixed_y], 
-                [center_x + mouth_w + look_shift//2, mouth_fixed_y], 
-                [center_x + look_shift//2, mouth_fixed_y + drop]
-            ], np.int32)
-            cv2.ellipse(canvas, (center_x + look_shift//2, mouth_fixed_y), 
-                        (mouth_w, drop), 0, 0, 180, (50, 0, 0), -1)
-            cv2.line(canvas, (center_x - mouth_w + look_shift//2, mouth_fixed_y),
-                             (center_x + mouth_w + look_shift//2, mouth_fixed_y), (50,0,0), 2)
-            # Dents
-            cv2.rectangle(canvas, 
-                          (center_x + look_shift//2 - int(mouth_w*0.7), mouth_fixed_y), 
-                          (center_x + look_shift//2 + int(mouth_w*0.7), mouth_fixed_y + 8), 
-                          (240,240,240), -1)
+        # On calcule le facteur d'échelle pour faire rentrer la hauteur de la caméra dans la fenêtre
+        scale_factor = self.h / cam_h
+        
+        # On calcule le centrage horizontal
+        scaled_cam_w = cam_w * scale_factor
+        center_offset_x = (self.w - scaled_cam_w) // 2
 
-        # CAS 2 : Sourire détecté (même bouche fermée)
-        elif is_smiling:
-            # On dessine un arc vers le HAUT (U)
-            center_mouth_x = center_x + look_shift//2
+        # On crée une nouvelle liste de points utilisateur redimensionnés et centrés
+        landmarks_user_scaled = []
+        for lm in data['landmarks']:
+            # Appliquer l'échelle et le centrage
+            lx = int(lm[0] * scale_factor + center_offset_x)
+            ly = int(lm[1] * scale_factor)
+            landmarks_user_scaled.append((lx, ly))
+        # ---------------------------------------
+
+
+        landmarks_source = self.mask_landmarks
+        img_source = self.mask_img[:, :, :3] # On ignore alpha pour le warp
+        
+        warped_face = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+
+        # Rendu de tous les triangles avec les points SCALÉS
+        for triangle_indices in self.triangles:
+            t1 = [] # Source (Avatar)
+            t2 = [] # Destination (Utilisateur Scalé)
+            for index in triangle_indices:
+                t1.append(landmarks_source[index])
+                # On utilise la liste corrigée ici :
+                t2.append(landmarks_user_scaled[index]) 
             
-            # Ligne du sourire
-            cv2.ellipse(canvas, (center_mouth_x, mouth_fixed_y), 
-                        (mouth_w, int(face_h * 0.15)), 
-                        0, 0, 180, self.lip_color, 4)
-            # Fossettes (optionnel)
-            cv2.line(canvas, (center_mouth_x - mouth_w - 5, mouth_fixed_y - 5),
-                             (center_mouth_x - mouth_w, mouth_fixed_y), (150,100,100), 2)
-            cv2.line(canvas, (center_mouth_x + mouth_w + 5, mouth_fixed_y - 5),
-                             (center_mouth_x + mouth_w, mouth_fixed_y), (150,100,100), 2)
+            self.warp_triangle(img_source, warped_face, t1, t2)
 
-        # CAS 3 : Tirer la gueule (Entre ouvert, mais pas de sourire détecté)
-        elif openness > 0.08:
-            center_mouth_x = center_x + look_shift//2
-            # Arc vers le BAS
-            cv2.ellipse(canvas, (center_mouth_x, mouth_fixed_y + 10), 
-                        (mouth_w, int(face_h * 0.15)), 
-                        0, 180, 360, self.lip_color, 4)
-            # Ombre
-            cv2.ellipse(canvas, (center_mouth_x, mouth_fixed_y + 15), 
-                        (int(mouth_w*0.6), int(face_h * 0.1)), 
-                        0, 180, 360, (150,100,100), 2)
-
-        # CAS 4 : Neutre
-        else:
-            start_p = (center_x - mouth_w + look_shift//2, mouth_fixed_y)
-            end_p = (center_x + mouth_w + look_shift//2, mouth_fixed_y)
-            cv2.line(canvas, start_p, end_p, self.lip_color, 4)
-
+        # Finalisation propre
+        warped_gray = cv2.cvtColor(warped_face, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(warped_gray, 1, 255, cv2.THRESH_BINARY)
+        mask_inv = cv2.bitwise_not(mask)
+        
+        bg = cv2.bitwise_and(canvas, canvas, mask=mask_inv)
+        fg = cv2.bitwise_and(warped_face, warped_face, mask=mask)
+        
+        canvas = cv2.add(bg, fg)
         return canvas
