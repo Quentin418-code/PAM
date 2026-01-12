@@ -59,7 +59,7 @@ def main():
         # cv2.moveWindow('PAM - Camera', 0, 0)
         # cv2.moveWindow('PAM - Avatar', display_frame.shape[1] + 10, 0)
 
-        if cv2.waitKey(25) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
