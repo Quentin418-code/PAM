@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+# On ignore les vidéos lourdes (optionnel, mais recommandé si > 100Mo)
+# *.mp4
+*.mp4
