@@ -54,3 +54,29 @@ Pour chaque frame vidéo :
 * **`mask.png` :** Doit impérativement contenir un visage détectable de face. Si l'écran reste noir ou affiche "LOADING", c'est que l'IA ne reconnaît pas le visage sur l'image source.
 * **Bords d'écran :** Une sécurité "Clipping" est active dans `warp_triangle` pour éviter les crashs si le visage sort du cadre.
 
+
+## 📱 Mode Live (Intégration Smartphone/DroidCam)
+Le projet supporte désormais l'utilisation d'un smartphone comme caméra HD via **DroidCam** (Linux).
+
+### Pré-requis
+1.  **Smartphone :** Installer l'application **DroidCam** (Android/iOS).
+2.  **PC (Linux) :** Installer le client et le module vidéo :
+    ```bash
+    cd /tmp/
+    wget -O droidcam_latest.zip [https://files.dev47apps.net/linux/droidcam_2.1.3.zip](https://files.dev47apps.net/linux/droidcam_2.1.3.zip)
+    unzip droidcam_latest.zip -d droidcam
+    cd droidcam && sudo ./install-client && sudo ./install-video
+    ```
+
+### Procédure de Connexion
+1.  Lancer DroidCam sur le téléphone. Notez l'IP WiFi (ex: `192.168.x.x`).
+    * *Attention : Ne pas utiliser l'IP Mobile `10.x.x.x`.*
+2.  Lancer le client PC : `droidcam`.
+3.  Entrer l'IP du téléphone et cliquer sur **Connect**.
+4.  Vérifier que le flux vidéo apparaît sur le PC.
+
+### Configuration du Code (`main.py`)
+Le script détecte automatiquement la source vidéo.
+* **`VIDEO_SOURCE = 0`** : Caméra par défaut (souvent DroidCam).
+* **`VIDEO_SOURCE = 1`** : À tester si l'écran reste noir (conflit webcam interne).
+* **Scaling Auto :** Le fichier `src/avatar.py` redimensionne automatiquement les coordonnées HD du téléphone pour la fenêtre de rendu (600x600).

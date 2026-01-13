@@ -13,41 +13,35 @@ class AvatarRenderer:
         self.triangles = None
         self.is_ready = False
         
-        # Scanner en mode "Image Fixe" pour une précision maximale sur le mask
+        # Scanner haute précision pour l'image source
         self.mask_scanner = fm.FaceMeshDetector(static_mode=True)
-        
         self.load_and_mesh_mask()
 
     def load_and_mesh_mask(self):
         try:
-            print("--- CHARGEMENT DE MASK.PNG ---")
+            print("--- CHARGEMENT AVATAR (mask.png) ---")
             img = cv2.imread('mask.png', cv2.IMREAD_UNCHANGED)
             if img is None: 
                 print("ERREUR: 'mask.png' introuvable.")
                 return
 
-            # Conversion propre pour la détection
             if img.shape[2] == 4:
                 rgb_for_scan = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             else:
                 rgb_for_scan = img
 
-            # 1. SCAN DU VISAGE SUR L'IMAGE SOURCE
             data = self.mask_scanner.process(rgb_for_scan)
-            
             if not data['detected']:
-                print("ERREUR: Aucun visage trouvé sur mask.png.")
-                print("Conseil: Prends une image où le visage est bien de face et éclairé.")
+                print("ERREUR: Visage non détecté sur mask.png.")
                 return
 
             self.mask_img = img
             self.mask_landmarks = data['landmarks']
 
-            # 2. TRIANGULATION (On crée le maillage)
+            # Triangulation de Delaunay
             rect = (0, 0, self.mask_img.shape[1], self.mask_img.shape[0])
             subdiv = cv2.Subdiv2D(rect)
             
-            # On insère les points du visage
             for p in self.mask_landmarks:
                 if 0 <= p[0] < self.mask_img.shape[1] and 0 <= p[1] < self.mask_img.shape[0]:
                     subdiv.insert((float(p[0]), float(p[1])))
@@ -58,14 +52,10 @@ class AvatarRenderer:
             for t in triangle_list:
                 pts = [(t[0], t[1]), (t[2], t[3]), (t[4], t[5])]
                 indices = []
-                
-                # Pour chaque sommet du triangle, on retrouve son ID
                 for pt in pts:
-                    # Sécurité bords
                     if pt[0] < 0 or pt[0] >= self.mask_img.shape[1] or pt[1] < 0 or pt[1] >= self.mask_img.shape[0]:
                         continue
-                        
-                    # Recherche du landmark le plus proche
+                    
                     min_dist = 2.0 
                     found_idx = -1
                     for i, lm in enumerate(self.mask_landmarks):
@@ -76,35 +66,29 @@ class AvatarRenderer:
                     if found_idx != -1:
                         indices.append(found_idx)
                 
-                # Si on a bien les 3 points reliés au visage, on valide le triangle
                 if len(indices) == 3:
                     self.triangles.append(indices)
             
-            print(f"--- MESH PRET : {len(self.triangles)} polygones ---")
+            print(f"--- MESH GÉNÉRÉ : {len(self.triangles)} polygones ---")
             self.is_ready = True
 
         except Exception as e:
-            print(f"--- CRASH INIT: {e} ---")
+            print(f"CRASH INIT: {e}")
 
     def warp_triangle(self, img1, img2, t1, t2):
-        # 1. Calcul des boîtes englobantes
         r1 = cv2.boundingRect(np.float32([t1]))
         r2 = cv2.boundingRect(np.float32([t2]))
 
-        # Sécurités de base et clipping
         if r2[2] <= 0 or r2[3] <= 0: return 
         h, w = img2.shape[:2]
         
-        x1_dst, y1_dst = max(0, r2[0]), max(0, r2[1])
-        x2_dst, y2_dst = min(w, r2[0]+r2[2]), min(h, r2[1]+r2[3])
-        
-        if x1_dst >= x2_dst or y1_dst >= y2_dst: return
+        x1, y1 = max(0, r2[0]), max(0, r2[1])
+        x2, y2 = min(w, r2[0]+r2[2]), min(h, r2[1]+r2[3])
+        if x1 >= x2 or y1 >= y2: return
 
-        # Offsets locaux pour le dessin
-        offset_x, offset_y = x1_dst - r2[0], y1_dst - r2[1]
-        w_crop, h_crop = x2_dst - x1_dst, y2_dst - y1_dst
+        off_x, off_y = x1 - r2[0], y1 - r2[1]
+        w_crop, h_crop = x2 - x1, y2 - y1
 
-        # 2. Préparation des points locaux
         t1_rect = []
         t2_rect = []
         t2_rect_int = []
@@ -114,7 +98,6 @@ class AvatarRenderer:
             t2_rect.append(((t2[i][0] - r2[0]), (t2[i][1] - r2[1])))
             t2_rect_int.append(((t2[i][0] - r2[0]), (t2[i][1] - r2[1])))
 
-        # 3. Création du masque et warp
         mask = np.zeros((r2[3], r2[2], 3), dtype=np.float32)
         cv2.fillConvexPoly(mask, np.int32(t2_rect_int), (1.0, 1.0, 1.0), 16, 0)
 
@@ -125,64 +108,51 @@ class AvatarRenderer:
         img2_rect = cv2.warpAffine(img1_rect, warp_mat, size, None, 
                                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
 
-        # 4. Fusion Sécurisée sur la zone visible
-        img2_rect_crop = img2_rect[offset_y : offset_y+h_crop, offset_x : offset_x+w_crop]
-        mask_crop = mask[offset_y : offset_y+h_crop, offset_x : offset_x+w_crop]
+        img2_crop = img2_rect[off_y : off_y+h_crop, off_x : off_x+w_crop]
+        mask_crop = mask[off_y : off_y+h_crop, off_x : off_x+w_crop]
         
-        dest = img2[y1_dst:y2_dst, x1_dst:x2_dst]
+        dest = img2[y1:y2, x1:x2]
         dest[:] = dest * ((1.0, 1.0, 1.0) - mask_crop)
-        dest[:] = dest + (img2_rect_crop * mask_crop)
+        dest[:] = dest + (img2_crop * mask_crop)
 
     def draw(self, data):
         canvas = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         canvas[:] = self.bg_color
 
-        if not self.is_ready:
-            return canvas
-        if not data['detected']:
+        if not self.is_ready or not data['detected']:
             return canvas
 
-        # --- CORRECTION D'ECHELLE (SCALING) ---
-        # C'est ici qu'on règle le problème du visage "en bas à droite".
-        # On adapte les coordonnées de la caméra à la taille de la fenêtre Avatar.
-        
+        # --- AUTO-SCALING (Crucial pour DroidCam) ---
+        # On adapte la taille de la vidéo (ex: 1920x1080) à la fenêtre (600x600)
         cam_w = data.get('frame_w', self.w)
         cam_h = data.get('frame_h', self.h)
         
-        # On calcule le facteur d'échelle pour faire rentrer la hauteur de la caméra dans la fenêtre
-        scale_factor = self.h / cam_h
+        # Facteur de zoom pour faire rentrer la hauteur
+        scale = self.h / cam_h
         
-        # On calcule le centrage horizontal
-        scaled_cam_w = cam_w * scale_factor
-        center_offset_x = (self.w - scaled_cam_w) // 2
+        # Centrage horizontal
+        scaled_w = cam_w * scale
+        offset_x = (self.w - scaled_w) // 2
 
-        # On crée une nouvelle liste de points utilisateur redimensionnés et centrés
-        landmarks_user_scaled = []
+        landmarks_scaled = []
         for lm in data['landmarks']:
-            # Appliquer l'échelle et le centrage
-            lx = int(lm[0] * scale_factor + center_offset_x)
-            ly = int(lm[1] * scale_factor)
-            landmarks_user_scaled.append((lx, ly))
-        # ---------------------------------------
+            lx = int(lm[0] * scale + offset_x)
+            ly = int(lm[1] * scale)
+            landmarks_scaled.append((lx, ly))
+        # ---------------------------------------------
 
-
-        landmarks_source = self.mask_landmarks
-        img_source = self.mask_img[:, :, :3] # On ignore alpha pour le warp
-        
+        img_source = self.mask_img[:, :, :3]
         warped_face = np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
-        # Rendu de tous les triangles avec les points SCALÉS
         for triangle_indices in self.triangles:
-            t1 = [] # Source (Avatar)
-            t2 = [] # Destination (Utilisateur Scalé)
+            t1 = []
+            t2 = []
             for index in triangle_indices:
-                t1.append(landmarks_source[index])
-                # On utilise la liste corrigée ici :
-                t2.append(landmarks_user_scaled[index]) 
+                t1.append(self.mask_landmarks[index])
+                t2.append(landmarks_scaled[index]) # On utilise les points recalibrés
             
             self.warp_triangle(img_source, warped_face, t1, t2)
 
-        # Finalisation propre
         warped_gray = cv2.cvtColor(warped_face, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(warped_gray, 1, 255, cv2.THRESH_BINARY)
         mask_inv = cv2.bitwise_not(mask)
@@ -190,5 +160,4 @@ class AvatarRenderer:
         bg = cv2.bitwise_and(canvas, canvas, mask=mask_inv)
         fg = cv2.bitwise_and(warped_face, warped_face, mask=mask)
         
-        canvas = cv2.add(bg, fg)
-        return canvas
+        return cv2.add(bg, fg)

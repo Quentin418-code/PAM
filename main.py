@@ -4,51 +4,68 @@ from src.face_mesh import FaceMeshDetector
 from src.avatar import AvatarRenderer
 
 def main():
-    VIDEO_FILE = '12100.mp4'
+    # --- CONFIGURATION CAMÉRA ---
+    # 0 = Généralement la webcam par défaut ou DroidCam
+    # 1 = Essaie ça si le 0 ne marche pas (ou si tu as une autre webcam branchée)
+    # '12100.mp4' = Remets le nom du fichier si tu veux revenir à la vidéo
+    VIDEO_SOURCE = 0
     
-    # Initialisation du moteur Mesh
     detector = FaceMeshDetector()
-    
-    # Le renderer va scanner mask.png au démarrage, surveille le terminal !
     renderer = AvatarRenderer(size=600)
     
-    cap = cv2.VideoCapture(VIDEO_FILE)
+    print("--- PAM LIVE SYSTEM ---")
+    print(f"Connexion à la source vidéo {VIDEO_SOURCE}...")
+    
+    cap = cv2.VideoCapture(VIDEO_SOURCE)
+    
+    # On demande une bonne résolution au téléphone (HD 720p)
+    # Si le téléphone ne supporte pas, il prendra sa résolution par défaut
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    print("--- PAM MESH ENGINE STARTED ---")
-    print("Si ça rame, c'est normal : le calcul 3D est intensif.")
+    if not cap.isOpened():
+        print("ERREUR CRITIQUE: Impossible d'ouvrir la caméra.")
+        print("1. Vérifie que DroidCam (PC) et l'appli (Tel) sont connectés.")
+        print("2. Essaie de changer VIDEO_SOURCE = 1 dans le code.")
+        return
 
     cv2.namedWindow('PAM - Avatar', cv2.WINDOW_NORMAL)
-    cv2.namedWindow('PAM - Camera', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('PAM - Live', cv2.WINDOW_NORMAL)
+
+    print("--- SYSTÈME PRÊT ---")
+    print("Appuie sur 'q' pour quitter.")
 
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
+            print("Fin du flux ou erreur de lecture.")
+            # Si c'est une vidéo en boucle, on rembobine. Sinon on quitte.
+            if isinstance(VIDEO_SOURCE, str):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                continue
+            else:
+                break
 
-        # 1. Analyse Mesh (468 points)
+        # EFFET MIROIR (Indispensable pour le direct)
+        # 1 = Flip horizontal (comme un miroir)
+        if isinstance(VIDEO_SOURCE, int): 
+            frame = cv2.flip(frame, 1)
+
+        # 1. Analyse (Détection 3D)
         face_data = detector.process(frame)
         
-        # 2. Rendu Warp
+        # 2. Rendu (Warping + Adaptation à la taille de la caméra)
         avatar_img = renderer.draw(face_data)
 
-        # 3. Debug Caméra
-        if face_data['detected']:
-            pts = face_data['landmarks']
-            # On dessine quelques points pour montrer que le tracking marche
-            # (Ex: Contour visage et lèvres)
-            for i in range(0, len(pts), 5): # Un point sur 5 pour pas surcharger
-                cv2.circle(frame, (pts[i][0], pts[i][1]), 1, (0, 255, 0), -1)
-            
-            (x, y, w, h) = face_data['debug_box']
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-
+        # 3. Affichage
         cv2.imshow('PAM - Avatar', avatar_img)
         
-        h_cam, w_cam = frame.shape[:2]
-        if h_cam > 600:
-            frame = cv2.resize(frame, (int(w_cam * (600/h_cam)), 600))
-        cv2.imshow('PAM - Camera', frame)
+        # Affichage du retour caméra (en petit pour contrôle)
+        h, w = frame.shape[:2]
+        display_w = 480
+        display_h = int(h * (display_w / w))
+        small_frame = cv2.resize(frame, (display_w, display_h))
+        cv2.imshow('PAM - Live', small_frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
