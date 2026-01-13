@@ -1,63 +1,71 @@
 import cv2
 import numpy as np
-from src.face_detector import FaceDetector
+from src.face_mesh import FaceMeshDetector
 from src.avatar import AvatarRenderer
 
 def main():
-    # --- CONFIGURATION ---
-    VIDEO_FILE = '12100.mp4'
+    # --- CONFIGURATION CAMÉRA ---
+    # 0 = Généralement la webcam par défaut ou DroidCam
+    # 1 = Essaie ça si le 0 ne marche pas (ou si tu as une autre webcam branchée)
+    # '12100.mp4' = Remets le nom du fichier si tu veux revenir à la vidéo
+    VIDEO_SOURCE = 0
     
-    detector = FaceDetector()
-    renderer = AvatarRenderer(size=600) # Fenêtre de l'avatar (carrée)
+    detector = FaceMeshDetector()
+    renderer = AvatarRenderer(size=600)
     
-    cap = cv2.VideoCapture(VIDEO_FILE)
+    print("--- PAM LIVE SYSTEM ---")
+    print(f"Connexion à la source vidéo {VIDEO_SOURCE}...")
+    
+    cap = cv2.VideoCapture(VIDEO_SOURCE)
+    
+    # On demande une bonne résolution au téléphone (HD 720p)
+    # Si le téléphone ne supporte pas, il prendra sa résolution par défaut
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    print(f"--- LECTURE VIDEO : {VIDEO_FILE} ---")
-    print("Appuie sur 'q' pour quitter.")
+    if not cap.isOpened():
+        print("ERREUR CRITIQUE: Impossible d'ouvrir la caméra.")
+        print("1. Vérifie que DroidCam (PC) et l'appli (Tel) sont connectés.")
+        print("2. Essaie de changer VIDEO_SOURCE = 1 dans le code.")
+        return
 
-    # On crée une fenêtre "intelligente" qu'on pourra redimensionner
-    cv2.namedWindow('PAM - Camera', cv2.WINDOW_NORMAL)
     cv2.namedWindow('PAM - Avatar', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('PAM - Live', cv2.WINDOW_NORMAL)
+
+    print("--- SYSTÈME PRÊT ---")
+    print("Appuie sur 'q' pour quitter.")
 
     while cap.isOpened():
         success, frame = cap.read()
-        
         if not success:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
+            print("Fin du flux ou erreur de lecture.")
+            # Si c'est une vidéo en boucle, on rembobine. Sinon on quitte.
+            if isinstance(VIDEO_SOURCE, str):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                continue
+            else:
+                break
 
-        # 1. Analyse
+        # EFFET MIROIR (Indispensable pour le direct)
+        # 1 = Flip horizontal (comme un miroir)
+        if isinstance(VIDEO_SOURCE, int): 
+            frame = cv2.flip(frame, 1)
+
+        # 1. Analyse (Détection 3D)
         face_data = detector.process(frame)
         
-        # 2. Création de l'Avatar
+        # 2. Rendu (Warping + Adaptation à la taille de la caméra)
         avatar_img = renderer.draw(face_data)
 
-        # 3. Debug visuel (Carré vert)
-        if face_data['detected']:
-            (x, y, w, h) = face_data['debug_box']
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-
-        # --- AFFICHAGE ADAPTATIF ---
-        
-        # On calcule un facteur de réduction pour que la vidéo tienne sur l'écran
-        # Si la hauteur dépasse 600px, on la réduit
-        target_height = 600
-        h_cam, w_cam, _ = frame.shape
-        
-        if h_cam > target_height:
-            scale = target_height / h_cam
-            new_w = int(w_cam * scale)
-            new_h = int(h_cam * scale)
-            display_frame = cv2.resize(frame, (new_w, new_h))
-        else:
-            display_frame = frame
-
-        cv2.imshow('PAM - Camera', display_frame)
+        # 3. Affichage
         cv2.imshow('PAM - Avatar', avatar_img)
-
-        # Placement des fenêtres (facultatif, pour éviter le chevauchement)
-        # cv2.moveWindow('PAM - Camera', 0, 0)
-        # cv2.moveWindow('PAM - Avatar', display_frame.shape[1] + 10, 0)
+        
+        # Affichage du retour caméra (en petit pour contrôle)
+        h, w = frame.shape[:2]
+        display_w = 480
+        display_h = int(h * (display_w / w))
+        small_frame = cv2.resize(frame, (display_w, display_h))
+        cv2.imshow('PAM - Live', small_frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
