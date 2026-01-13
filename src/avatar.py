@@ -13,7 +13,13 @@ class AvatarRenderer:
         self.triangles = None
         self.is_ready = False
         
-        # Scanner haute précision pour l'image source
+        # Indices des points qui forment le contour INTERIEUR de la bouche
+        # C'est une boucle standard de MediaPipe
+        self.inner_mouth_indices = [
+            78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, # Lèvre haut (gauche vers droite)
+            324, 318, 402, 317, 14, 87, 178, 88, 95          # Lèvre bas (droite vers gauche)
+        ]
+        
         self.mask_scanner = fm.FaceMeshDetector(static_mode=True)
         self.load_and_mesh_mask()
 
@@ -38,7 +44,6 @@ class AvatarRenderer:
             self.mask_img = img
             self.mask_landmarks = data['landmarks']
 
-            # Triangulation de Delaunay
             rect = (0, 0, self.mask_img.shape[1], self.mask_img.shape[0])
             subdiv = cv2.Subdiv2D(rect)
             
@@ -55,7 +60,6 @@ class AvatarRenderer:
                 for pt in pts:
                     if pt[0] < 0 or pt[0] >= self.mask_img.shape[1] or pt[1] < 0 or pt[1] >= self.mask_img.shape[0]:
                         continue
-                    
                     min_dist = 2.0 
                     found_idx = -1
                     for i, lm in enumerate(self.mask_landmarks):
@@ -81,7 +85,6 @@ class AvatarRenderer:
 
         if r2[2] <= 0 or r2[3] <= 0: return 
         h, w = img2.shape[:2]
-        
         x1, y1 = max(0, r2[0]), max(0, r2[1])
         x2, y2 = min(w, r2[0]+r2[2]), min(h, r2[1]+r2[3])
         if x1 >= x2 or y1 >= y2: return
@@ -122,15 +125,10 @@ class AvatarRenderer:
         if not self.is_ready or not data['detected']:
             return canvas
 
-        # --- AUTO-SCALING (Crucial pour DroidCam) ---
-        # On adapte la taille de la vidéo (ex: 1920x1080) à la fenêtre (600x600)
+        # Auto-Scaling
         cam_w = data.get('frame_w', self.w)
         cam_h = data.get('frame_h', self.h)
-        
-        # Facteur de zoom pour faire rentrer la hauteur
         scale = self.h / cam_h
-        
-        # Centrage horizontal
         scaled_w = cam_w * scale
         offset_x = (self.w - scaled_w) // 2
 
@@ -139,19 +137,30 @@ class AvatarRenderer:
             lx = int(lm[0] * scale + offset_x)
             ly = int(lm[1] * scale)
             landmarks_scaled.append((lx, ly))
-        # ---------------------------------------------
 
         img_source = self.mask_img[:, :, :3]
         warped_face = np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
+        # 1. Warping du visage
         for triangle_indices in self.triangles:
             t1 = []
             t2 = []
             for index in triangle_indices:
                 t1.append(self.mask_landmarks[index])
-                t2.append(landmarks_scaled[index]) # On utilise les points recalibrés
-            
+                t2.append(landmarks_scaled[index])
             self.warp_triangle(img_source, warped_face, t1, t2)
+
+        # --- FIX BOUCHE : LE TROU NOIR ---
+        # On récupère les points du contour intérieur de la bouche (scalés)
+        mouth_hole_points = []
+        for idx in self.inner_mouth_indices:
+            mouth_hole_points.append(landmarks_scaled[idx])
+            
+        # On remplit cette zone avec une couleur sombre (Bleu nuit Na'vi)
+        # Couleur BGR : (Bleu, Vert, Rouge) -> (40, 20, 30)
+        if len(mouth_hole_points) > 0:
+             cv2.fillPoly(warped_face, [np.array(mouth_hole_points, np.int32)], (40, 20, 30))
+        # ---------------------------------
 
         warped_gray = cv2.cvtColor(warped_face, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(warped_gray, 1, 255, cv2.THRESH_BINARY)

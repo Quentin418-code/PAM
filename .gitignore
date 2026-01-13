@@ -1,7 +1,15 @@
+# --- SECURITE : Contenus Perso ---
+*.mp4
+*.avi
+*.mov
+*.mkv
+# On ignore les photos de test, mais on garde mask.png (l'avatar)
+test_*.png
+test_*.jpg
+
+# --- SYSTEME : Fichiers lourds et inutiles ---
 venv/
 __pycache__/
 *.pyc
 .DS_Store
-# On ignore les vidéos lourdes (optionnel, mais recommandé si > 100Mo)
-# *.mp4
-*.mp4
+.env
